@@ -172,3 +172,12 @@ dist
 .wrangler/
 
 .vscode
+
+
+# No lock files.
+package-lock.json
+yarn.lock
+
+
+
+.editorconfig
