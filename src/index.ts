@@ -47,11 +47,50 @@ function parseSSE(data: string): string {
 	return result;
 }
 
+async function callDepartment(deptKey: keyof Pick<Env, 'LANGBASE_SPORTS_PIPE_API_KEY' | 'LANGBASE_ELECTRONICS_PIPE_API_KEY' | 'LANGBASE_TRAVEL_PIPE_API_KEY'>, customerQuery: string, env: Env, threadId?: string): Promise<ReadableStream> {
+	console.log(`Calling ${deptKey} department with query:`, customerQuery);
+
+	const response = await fetch('https://api.langbase.com/beta/generate', {
+		method: 'POST',
+		headers: {
+			'Content-Type': 'application/json',
+			Authorization: `Bearer ${env[deptKey]}`,
+		},
+		body: JSON.stringify({
+			messages: [{ role: 'user', content: customerQuery }],
+			...(threadId && { threadId })
+		}),
+	});
+
+	if (!response.ok) {
+		return new ReadableStream({
+			start(controller) {
+				controller.enqueue(new TextEncoder().encode(`Error: ${response.status} ${response.statusText}`));
+				controller.close();
+			}
+		});
+	}
+
+	const reader = response.body!.getReader();
+	const decoder = new TextDecoder();
+	const encoder = new TextEncoder();
+
+	return new ReadableStream({
+		async start(controller) {
+			while (true) {
+				const { done, value } = await reader.read();
+				if (done) break;
+
+				const chunk = decoder.decode(value, { stream: true });
+				controller.enqueue(encoder.encode(chunk));
+			}
+			controller.close();
+		}
+	});
+}
 
 export default {
-	async fetch(request: Request, env:
-		{ OPENAI_API_KEY: string, LANGBASE_SPORTS_PIPE_API_KEY: string, LANGBASE_ELECTRONICS_PIPE_API_KEY: string, LANGBASE_TRAVEL_PIPE_API_KEY: string },
-		ctx: ExecutionContext): Promise<Response> {
+	async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
 
 		if (request.method === 'OPTIONS') {
 			return new Response(null, {
@@ -104,40 +143,6 @@ export default {
 
 		const query = incomingMessages[incomingMessages.length - 1].content;
 		console.log('Extracted query:', query);
-
-		async function callDepartment(deptKey: keyof Pick<Env, 'LANGBASE_SPORTS_PIPE_API_KEY' | 'LANGBASE_ELECTRONICS_PIPE_API_KEY' | 'LANGBASE_TRAVEL_PIPE_API_KEY'>, customerQuery: string): Promise<string> {
-			console.log(`Calling ${deptKey} department with query:`, customerQuery);
-
-			const response = await fetch('https://api.langbase.com/beta/generate', {
-				method: 'POST',
-				headers: {
-					'Content-Type': 'application/json',
-					Authorization: `Bearer ${env[deptKey]}`,
-				},
-				body: JSON.stringify({
-					messages: [{ role: 'user', content: customerQuery }],
-					...(threadId && { threadId })
-				}),
-			});
-
-			if (!response.ok) {
-				throw new Error(`HTTP error! status: ${response.status}`);
-			}
-
-			const rawText = await response.text();
-			console.log('Raw response:', rawText);
-
-			const parsedContent = parseSSE(rawText);
-			console.log(`${deptKey} department parsed response:`, parsedContent);
-
-			try {
-				const data = JSON.parse(parsedContent) as LangbaseResponse;
-				return `Ticket No.: ${data['Ticket No.']}, Classification: ${data['Classification']}`;
-			} catch (error) {
-				console.error('Error parsing JSON:', error);
-				return 'Error processing department response';
-			}
-		}
 
 
 		const messages: ChatCompletionMessageParam[] = [
@@ -207,7 +212,13 @@ export default {
 		});
 
 		const assistantMessage = chatCompletion.choices[0].message;
-		let responseContent: string = '';
+
+		let responseStream: ReadableStream = new ReadableStream({
+			start(controller) {
+				controller.enqueue(new TextEncoder().encode('No response generated.'));
+				controller.close();
+			}
+		});
 
 		if (assistantMessage.tool_calls) {
 			for (const toolCall of assistantMessage.tool_calls) {
@@ -216,24 +227,28 @@ export default {
 
 				switch (functionName) {
 					case 'call_sports_dept':
-						responseContent = await callDepartment('LANGBASE_SPORTS_PIPE_API_KEY', functionArgs.customerQuery);
+						responseStream = await callDepartment('LANGBASE_SPORTS_PIPE_API_KEY', functionArgs.customerQuery, env, threadId);
 						break;
 					case 'call_electronics_dept':
-						responseContent = await callDepartment('LANGBASE_ELECTRONICS_PIPE_API_KEY', functionArgs.customerQuery);
+						responseStream = await callDepartment('LANGBASE_ELECTRONICS_PIPE_API_KEY', functionArgs.customerQuery, env, threadId);
 						break;
 					case 'call_travel_dept':
-						responseContent = await callDepartment('LANGBASE_TRAVEL_PIPE_API_KEY', functionArgs.customerQuery);
+						responseStream = await callDepartment('LANGBASE_TRAVEL_PIPE_API_KEY', functionArgs.customerQuery, env, threadId);
 						break;
 				}
 			}
 		} else {
-			responseContent = assistantMessage.content || 'Sorry, I couldn\'t process your request.';
+			responseStream = new ReadableStream({
+				start(controller) {
+					controller.enqueue(assistantMessage.content || 'Sorry, I couldn\'t process your request.');
+					controller.close();
+				}
+			});
 		}
 
-
-		return new Response(JSON.stringify({ content: responseContent }), {
+		return new Response(responseStream, {
 			headers: {
-				'Content-Type': 'application/json',
+				'Content-Type': 'text/event-stream',
 				'Access-Control-Allow-Origin': 'http://localhost:3000',
 				'Access-Control-Allow-Methods': 'POST, OPTIONS',
 				'Access-Control-Allow-Headers': 'Content-Type',
