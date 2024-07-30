@@ -15,6 +15,7 @@
 
 import { OpenAI } from 'openai/index.mjs';
 import { ChatCompletionMessageParam } from 'openai/resources/index.mjs';
+import { OpenAIStream } from 'ai';
 
 interface LangbaseResponse {
 	completion: string;
@@ -146,7 +147,9 @@ export default {
 
 
 		const messages: ChatCompletionMessageParam[] = [
-			{ role: 'system', content: 'You are a customer support assistant for TechBay, an online store that sells sports gear (including sports clothes), electronics and appliances, and travel bags and suitcases. Classify the customer query into one of these three categories and call the appropriate function.' },
+			// { role: 'system', content: 'You are a customer support assistant for TechBay, an online store that sells sports gear (including sports clothes), electronics and appliances, and travel bags and suitcases. Greet the customer and tell them if the need assistance with their purchae. As this is demo application simulate customer support assistant for TechBay as described earlier. If customer desribes their problem then Classify the customer query into one of these three categories and call the appropriate function. When customer seem the tool call reponse which is basically a ticket no. and classification, politely tell them to be patient as respresentative of a department which is the tool call name will contant them soon' },
+			// { role: 'user', content: query }
+			{ role: 'system', content: 'You are a customer support assistant for TechBay, an online store that sells sports gear (including sports clothes), electronics and appliances, and travel bags and suitcases. Greet the customer and tell them if the need assistance with their purchae. As this is demo application simulate customer support assistant for TechBay as described earlier. If customer desribes their problem then Classify the customer query ONLY when the customer says into one of these three categories and call the appropriate function. When customer seem the tool call reponse which is basically a ticket no. and classification, politely tell them to be patient as respresentative of a department which is the tool call name will contant them soon' },
 			{ role: 'user', content: query }
 		];
 
@@ -205,13 +208,14 @@ export default {
 		];
 
 		const chatCompletion = await openai.chat.completions.create({
-			model: 'gpt-3.5-turbo',
+			model: 'gpt-4-turbo',
 			messages: messages,
 			tools: tools,
 			tool_choice: 'auto',
 		});
 
 		const assistantMessage = chatCompletion.choices[0].message;
+		console.log('OpenAI response:', assistantMessage.content);
 
 		let responseStream: ReadableStream = new ReadableStream({
 			start(controller) {
@@ -220,7 +224,7 @@ export default {
 			}
 		});
 
-		if (assistantMessage.tool_calls) {
+		if (assistantMessage.tool_calls && assistantMessage.tool_calls.length > 0) {
 			for (const toolCall of assistantMessage.tool_calls) {
 				const functionName = toolCall.function.name;
 				const functionArgs = JSON.parse(toolCall.function.arguments);
@@ -239,20 +243,40 @@ export default {
 			}
 		} else {
 			responseStream = new ReadableStream({
-				start(controller) {
-					controller.enqueue(assistantMessage.content || 'Sorry, I couldn\'t process your request.');
-					controller.close();
+				async start(controller) {
+				  const encoder = new TextEncoder();
+				  const content = assistantMessage.content || 'Sorry, I couldn\'t process your request.';
+				  controller.enqueue(encoder.encode('data: ' + JSON.stringify({ choices: [{ delta: { content } }] }) + '\n\n'));
+				  controller.close();
 				}
-			});
-		}
+			  });
+			}
+			
+		// 	responseStream = new ReadableStream({
+		// 		async start(controller) {
+		// 			const reader = chatCompletion.body?.getReader();
+		// 			if (!reader) {
+		// 				controller.enqueue(new TextEncoder().encode(assistantMessage.content || 'Sorry, I couldn\'t process your request.'));
+		// 				controller.close();
+		// 				return;
+		// 			}
+
+		// 			const decoder = new TextDecoder();
+		// 			const encoder = new TextEncoder();
+
+		// 			while (true) {
+		// 				const { done, value } = await reader.read();
+		// 				if (done) break;
 
 		return new Response(responseStream, {
 			headers: {
 				'Content-Type': 'text/event-stream',
+				'Cache-Control': 'no-cache',
+				'Connection': 'keep-alive',
 				'Access-Control-Allow-Origin': 'http://localhost:3000',
 				'Access-Control-Allow-Methods': 'POST, OPTIONS',
 				'Access-Control-Allow-Headers': 'Content-Type',
-			},
+			  },
 		});
 
 	},
