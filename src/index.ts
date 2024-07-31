@@ -147,9 +147,7 @@ export default {
 
 
 		const messages: ChatCompletionMessageParam[] = [
-			// { role: 'system', content: 'You are a customer support assistant for TechBay, an online store that sells sports gear (including sports clothes), electronics and appliances, and travel bags and suitcases. Greet the customer and tell them if the need assistance with their purchae. As this is demo application simulate customer support assistant for TechBay as described earlier. If customer desribes their problem then Classify the customer query into one of these three categories and call the appropriate function. When customer seem the tool call reponse which is basically a ticket no. and classification, politely tell them to be patient as respresentative of a department which is the tool call name will contant them soon' },
-			// { role: 'user', content: query }
-			{ role: 'system', content: 'You are a customer support assistant for TechBay, an online store that sells sports gear (including sports clothes), electronics and appliances, and travel bags and suitcases. Greet the customer and tell them if the need assistance with their purchae. As this is demo application simulate customer support assistant for TechBay as described earlier. If customer desribes their problem then Classify the customer query ONLY when the customer says into one of these three categories and call the appropriate function. When customer seem the tool call reponse which is basically a ticket no. and classification, politely tell them to be patient as respresentative of a department which is the tool call name will contant them soon' },
+			{ role: 'system', content: 'You are a customer support assistant for TechBay, an online store that sells sports gear (including sports clothes), electronics and appliances, and travel bags and suitcases. Greet the customer and tell them if the need assistance with their purchae. As this is demo application simulate customer support assistant for TechBay as described earlier. If customer desribes their problem then Classify the customer query into one of these three categories and call the appropriate function. The customer is issued a ticket no. and classification from the toolcall after the classification, politely tell them to be patient as respresentative of a department which is the tool call name will contant them soon' },
 			{ role: 'user', content: query }
 		];
 
@@ -252,21 +250,6 @@ export default {
 			  });
 			}
 			
-		// 	responseStream = new ReadableStream({
-		// 		async start(controller) {
-		// 			const reader = chatCompletion.body?.getReader();
-		// 			if (!reader) {
-		// 				controller.enqueue(new TextEncoder().encode(assistantMessage.content || 'Sorry, I couldn\'t process your request.'));
-		// 				controller.close();
-		// 				return;
-		// 			}
-
-		// 			const decoder = new TextDecoder();
-		// 			const encoder = new TextEncoder();
-
-		// 			while (true) {
-		// 				const { done, value } = await reader.read();
-		// 				if (done) break;
 
 		return new Response(responseStream, {
 			headers: {
