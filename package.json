@@ -20,6 +20,7 @@
   "dependencies": {
     "ai": "^3.0.16",
     "cheerio": "^1.0.0-rc.12",
+    "langbase": "^0.2.5",
     "openai": "^4.52.0"
   }
 }
