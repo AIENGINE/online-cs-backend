@@ -14,6 +14,7 @@
 // TODO: Parse threadid to continue conversation thread
 
 import { OpenAI } from 'openai/index.mjs';
+import { Pipe } from 'langbase';
 import { ChatCompletionMessageParam } from 'openai/resources/index.mjs';
 import { OpenAIStream } from 'ai';
 
@@ -25,7 +26,8 @@ export interface Env {
 	OPENAI_API_KEY: string;
 	LANGBASE_TRAVEL_PIPE_API_KEY: string,
 	LANGBASE_ELECTRONICS_PIPE_API_KEY: string,
-	LANGBASE_SPORTS_PIPE_API_KEY: string
+	LANGBASE_SPORTS_PIPE_API_KEY: string,
+	LANGBASE_ONLINE_STORE_CUSTOMER_SERVICE_API_KEY: string
 }
 
 function parseSSE(data: string): string {
@@ -145,75 +147,34 @@ export default {
 		const query = incomingMessages[incomingMessages.length - 1].content;
 		console.log('Extracted query:', query);
 
-
-		const messages: ChatCompletionMessageParam[] = [
-			{ role: 'system', content: 'You are a customer support assistant for TechBay, an online store that sells sports gear (including sports clothes), electronics and appliances, and travel bags and suitcases. Greet the customer and tell them if the need assistance with their purchae. As this is demo application simulate customer support assistant for TechBay as described earlier. If customer desribes their problem then Classify the customer query into one of these three categories and call the appropriate function. The customer is issued a ticket no. and classification from the toolcall after the classification, politely tell them to be patient as respresentative of a department which is the tool call name will contant them soon' },
-			{ role: 'user', content: query }
-		];
-
-		const tools: any = [
-			{
-				type: 'function',
-				function: {
-					name: 'call_sports_dept',
-					description: 'Call this function for queries related to sports gear and clothes',
-					parameters: {
-						type: 'object',
-						properties: {
-							customerQuery: {
-								type: 'string',
-								description: 'The customer query related to sports gear',
-							},
-						},
-						required: ['customerQuery'],
-					},
-				},
+		const userQuery = {
+			messages: [{ role: 'user', content: query }],
+		};
+		const mainCustomerServicePipeResp = await fetch('https://api.langbase.com/beta/chat', {
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/json',
+				Authorization: `Bearer ${env['LANGBASE_ONLINE_STORE_CUSTOMER_SERVICE_API_KEY']}`,
 			},
-			{
-				type: 'function',
-				function: {
-					name: 'call_electronics_dept',
-					description: 'Call this function for queries related to electronics and appliances',
-					parameters: {
-						type: 'object',
-						properties: {
-							customerQuery: {
-								type: 'string',
-								description: 'The customer query related to electronics and appliances',
-							},
-						},
-						required: ['customerQuery'],
-					},
-				},
-			},
-			{
-				type: 'function',
-				function: {
-					name: 'call_travel_dept',
-					description: 'Call this function for queries related to travel bags and suitcases',
-					parameters: {
-						type: 'object',
-						properties: {
-							customerQuery: {
-								type: 'string',
-								description: 'The customer query related to travel bags and suitcases',
-							},
-						},
-						required: ['customerQuery'],
-					},
-				},
-			},
-		];
-
-		const chatCompletion = await openai.chat.completions.create({
-			model: 'gpt-4-turbo',
-			messages: messages,
-			tools: tools,
-			tool_choice: 'auto',
+			body: JSON.stringify(userQuery),
 		});
 
-		const assistantMessage = chatCompletion.choices[0].message;
-		console.log('OpenAI response:', assistantMessage.content);
+		let assistantMessage = ''
+		const mainCustomerServicePipeData = await mainCustomerServicePipeResp.json();
+		const rawData = mainCustomerServicePipeData.raw;
+		console.log('main Pipe response:', rawData);
+
+		if (rawData && rawData.choices && rawData.choices.length > 0) {
+			assistantMessage = rawData.choices[0].message;
+			console.log('Assistant message:', JSON.stringify(assistantMessage, null, 2));
+
+			if (assistantMessage.tool_calls && assistantMessage.tool_calls.length > 0) {
+				const toolCall = assistantMessage.tool_calls[0];
+				console.log('Tool call:', toolCall.function.name);
+				console.log('Arguments:', toolCall.function.arguments);
+			}
+		}
+
 
 		let responseStream: ReadableStream = new ReadableStream({
 			start(controller) {
@@ -242,14 +203,14 @@ export default {
 		} else {
 			responseStream = new ReadableStream({
 				async start(controller) {
-				  const encoder = new TextEncoder();
-				  const content = assistantMessage.content || 'Sorry, I couldn\'t process your request.';
-				  controller.enqueue(encoder.encode('data: ' + JSON.stringify({ choices: [{ delta: { content } }] }) + '\n\n'));
-				  controller.close();
+					const encoder = new TextEncoder();
+					const content = assistantMessage.content || 'Sorry, I couldn\'t process your request.';
+					controller.enqueue(encoder.encode('data: ' + JSON.stringify({ choices: [{ delta: { content } }] }) + '\n\n'));
+					controller.close();
 				}
-			  });
-			}
-			
+			});
+		}
+
 
 		return new Response(responseStream, {
 			headers: {
@@ -259,7 +220,7 @@ export default {
 				'Access-Control-Allow-Origin': 'http://localhost:3000',
 				'Access-Control-Allow-Methods': 'POST, OPTIONS',
 				'Access-Control-Allow-Headers': 'Content-Type',
-			  },
+			},
 		});
 
 	},
