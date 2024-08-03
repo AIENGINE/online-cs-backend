@@ -17,6 +17,51 @@ interface LangbaseResponse {
 	completion: string;
 }
 
+interface ToolCall {
+	id: string;
+	type: string;
+	function: {
+		name: string;
+		arguments: string;
+	};
+}
+
+interface AssistantMessage {
+	role: string;
+	content: string | null;
+	tool_calls?: ToolCall[];
+}
+
+interface Choice {
+	index: number;
+	message: AssistantMessage;
+	logprobs: null;
+	finish_reason: string;
+}
+
+interface Usage {
+	prompt_tokens: number;
+	completion_tokens: number;
+	total_tokens: number;
+}
+
+interface RawResponse {
+	id: string;
+	object: string;
+	created: number;
+	model: string;
+	choices: Choice[];
+	usage: Usage;
+	system_fingerprint: null;
+}
+
+interface ApiResponse {
+	success: boolean;
+	completion: null;
+	raw: RawResponse;
+}
+
+
 export interface Env {
 	OPENAI_API_KEY: string;
 	LANGBASE_TRAVEL_PIPE_API_KEY: string,
@@ -28,7 +73,7 @@ export interface Env {
 async function callDepartment(deptKey: keyof Pick<Env, 'LANGBASE_SPORTS_PIPE_API_KEY' | 'LANGBASE_ELECTRONICS_PIPE_API_KEY' | 'LANGBASE_TRAVEL_PIPE_API_KEY'>, customerQuery: string, env: Env, threadId?: string): Promise<ReadableStream> {
 	console.log(`Calling ${deptKey} department with query:`, customerQuery);
 
-	const response = await fetch('https://api.langbase.com/beta/generate', {
+	const response = await fetch('https://api.langbase.com/beta/chat', {
 		method: 'POST',
 		headers: {
 			'Content-Type': 'application/json',
@@ -127,13 +172,17 @@ export default {
 			body: JSON.stringify(userQuery),
 		});
 
-		let assistantMessage = ''
-		const mainCustomerServicePipeData = await mainCustomerServicePipeResp.json();
+		let assistantMessage: AssistantMessage = { 
+			role: 'assistant',
+			content: null,
+			tool_calls: []
+	  	};
+		const mainCustomerServicePipeData= await mainCustomerServicePipeResp.json() as ApiResponse;
 		const rawData = mainCustomerServicePipeData.raw;
 		// console.log('main Pipe response:', rawData);
 
 		if (rawData && rawData.choices && rawData.choices.length > 0) {
-			assistantMessage = rawData.choices[0].message;
+			assistantMessage  = rawData.choices[0].message;
 			// console.log('Assistant message:', JSON.stringify(assistantMessage, null, 2));
 
 			if (assistantMessage.tool_calls && assistantMessage.tool_calls.length > 0) {
