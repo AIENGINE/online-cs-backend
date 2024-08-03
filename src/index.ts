@@ -11,13 +11,8 @@
  * Learn more at https://developers.cloudflare.com/workers/
  */
 
-// TODO: Parse threadid to continue conversation thread
 
-import { OpenAI } from 'openai/index.mjs';
 import { Pipe } from 'langbase';
-import { ChatCompletionMessageParam } from 'openai/resources/index.mjs';
-import { OpenAIStream } from 'ai';
-
 interface LangbaseResponse {
 	completion: string;
 }
@@ -28,26 +23,6 @@ export interface Env {
 	LANGBASE_ELECTRONICS_PIPE_API_KEY: string,
 	LANGBASE_SPORTS_PIPE_API_KEY: string,
 	LANGBASE_ONLINE_STORE_CUSTOMER_SERVICE_API_KEY: string
-}
-
-function parseSSE(data: string): string {
-	const lines = data.split('\n');
-	let result = '';
-	for (const line of lines) {
-		if (line.startsWith('data: ')) {
-			const jsonStr = line.slice(6);
-			if (jsonStr === '[DONE]') break;
-			try {
-				const jsonObj = JSON.parse(jsonStr);
-				if (jsonObj.choices && jsonObj.choices[0].delta.content) {
-					result += jsonObj.choices[0].delta.content;
-				}
-			} catch (e) {
-				console.error('Error parsing JSON:', e);
-			}
-		}
-	}
-	return result;
 }
 
 async function callDepartment(deptKey: keyof Pick<Env, 'LANGBASE_SPORTS_PIPE_API_KEY' | 'LANGBASE_ELECTRONICS_PIPE_API_KEY' | 'LANGBASE_TRAVEL_PIPE_API_KEY'>, customerQuery: string, env: Env, threadId?: string): Promise<ReadableStream> {
@@ -64,6 +39,7 @@ async function callDepartment(deptKey: keyof Pick<Env, 'LANGBASE_SPORTS_PIPE_API
 			...(threadId && { threadId })
 		}),
 	});
+	console.log('Thread ID for call dept:', threadId);
 
 	if (!response.ok) {
 		return new ReadableStream({
@@ -109,23 +85,14 @@ export default {
 			return new Response('Method Not Allowed', { status: 405 });
 		}
 
-
-		if (!env.OPENAI_API_KEY) {
-			return new Response('OPENAI_API_KEY is not set', { status: 500 });
-		}
-
-		const openai = new OpenAI({
-			apiKey: env.OPENAI_API_KEY,
-		});
-
 		let incomingMessages;
-		let threadId;
+		let threadId = request.headers.get('lb-thread-id') || undefined;
 		try {
 			const body = await request.json() as { messages: any[], threadId?: string };
 			console.log('Parsed request body:', body);
 
 			incomingMessages = body.messages;
-			threadId = body.threadId;
+			threadId = body.threadId || threadId; // client set threadid in body, which returns the lb-thread-id in header 
 
 			console.log('Extracted messages:', incomingMessages);
 			console.log('Thread ID:', threadId);
@@ -148,6 +115,7 @@ export default {
 		console.log('Extracted query:', query);
 
 		const userQuery = {
+			threadId,
 			messages: [{ role: 'user', content: query }],
 		};
 		const mainCustomerServicePipeResp = await fetch('https://api.langbase.com/beta/chat', {
@@ -162,11 +130,11 @@ export default {
 		let assistantMessage = ''
 		const mainCustomerServicePipeData = await mainCustomerServicePipeResp.json();
 		const rawData = mainCustomerServicePipeData.raw;
-		console.log('main Pipe response:', rawData);
+		// console.log('main Pipe response:', rawData);
 
 		if (rawData && rawData.choices && rawData.choices.length > 0) {
 			assistantMessage = rawData.choices[0].message;
-			console.log('Assistant message:', JSON.stringify(assistantMessage, null, 2));
+			// console.log('Assistant message:', JSON.stringify(assistantMessage, null, 2));
 
 			if (assistantMessage.tool_calls && assistantMessage.tool_calls.length > 0) {
 				const toolCall = assistantMessage.tool_calls[0];
@@ -175,7 +143,8 @@ export default {
 			}
 		}
 
-
+		threadId = mainCustomerServicePipeResp.headers.get('lb-thread-id') || threadId;
+		console.log('ThreadId:', threadId);
 		let responseStream: ReadableStream = new ReadableStream({
 			start(controller) {
 				controller.enqueue(new TextEncoder().encode('No response generated.'));
@@ -219,7 +188,8 @@ export default {
 				'Connection': 'keep-alive',
 				'Access-Control-Allow-Origin': 'http://localhost:3000',
 				'Access-Control-Allow-Methods': 'POST, OPTIONS',
-				'Access-Control-Allow-Headers': 'Content-Type',
+				'Access-Control-Allow-Headers': 'Content-Type, lb-thread-id',
+				'lb-thread-id': threadId || '',
 			},
 		});
 
