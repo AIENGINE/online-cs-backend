@@ -1,5 +1,3 @@
-import { Pipe } from 'langbase';
-
 interface LangbaseResponse {
 	completion: string;
 }
@@ -149,8 +147,13 @@ async function processRawChoices(choice: Choice, env: Env, threadId: string): Pr
 
 function processSuccessfulCompletion(completion: any): ReadableStream {
     try {
-        const parsedCompletion = typeof completion === 'string' ? JSON.parse(completion) : completion;
-        const message = parsedCompletion.message || parsedCompletion.content || JSON.stringify(parsedCompletion);
+        let message: string;
+        if (typeof completion === 'string') {
+            const parsedCompletion = JSON.parse(completion);
+            message = parsedCompletion.response || parsedCompletion.message || parsedCompletion.content || parsedCompletion.greeting || JSON.stringify(parsedCompletion);
+        } else {
+            message = completion.response || completion.message || completion.content || JSON.stringify(completion);
+        }
         return createMessageStream(message);
     } catch (error) {
         console.error('Error parsing completion:', error);
