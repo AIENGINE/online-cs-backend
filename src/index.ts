@@ -54,7 +54,6 @@ export interface Env {
     LANGBASE_ONLINE_STORE_CUSTOMER_SERVICE_API_KEY: string
 }
 
-
 function getDepartmentKey(functionName: string): keyof Pick<Env, 'LANGBASE_SPORTS_PIPE_API_KEY' | 'LANGBASE_ELECTRONICS_PIPE_API_KEY' | 'LANGBASE_TRAVEL_PIPE_API_KEY'> | null {
     const departmentMap: { [key: string]: keyof Pick<Env, 'LANGBASE_SPORTS_PIPE_API_KEY' | 'LANGBASE_ELECTRONICS_PIPE_API_KEY' | 'LANGBASE_TRAVEL_PIPE_API_KEY'> } = {
         'call_sports_dept': 'LANGBASE_SPORTS_PIPE_API_KEY',
@@ -64,22 +63,7 @@ function getDepartmentKey(functionName: string): keyof Pick<Env, 'LANGBASE_SPORT
     return departmentMap[functionName] || null;
 }
 
-
-function createMessageStream(content: string): ReadableStream {
-    return new ReadableStream({
-        start(controller) {
-            const encoder = new TextEncoder();
-            controller.enqueue(encoder.encode('data: ' + JSON.stringify({ choices: [{ delta: { content } }] }) + '\n\n'));
-            controller.close();
-        }
-    });
-}
-
-function createErrorStream(errorMessage: string): ReadableStream {
-    return createMessageStream(errorMessage);
-}
-
-async function callDepartment(deptKey: keyof Pick<Env, 'LANGBASE_SPORTS_PIPE_API_KEY' | 'LANGBASE_ELECTRONICS_PIPE_API_KEY' | 'LANGBASE_TRAVEL_PIPE_API_KEY'>, customerQuery: string, env: Env, threadId?: string): Promise<ReadableStream> {
+async function callDepartment(deptKey: keyof Pick<Env, 'LANGBASE_SPORTS_PIPE_API_KEY' | 'LANGBASE_ELECTRONICS_PIPE_API_KEY' | 'LANGBASE_TRAVEL_PIPE_API_KEY'>, customerQuery: string, env: Env, threadId?: string): Promise<ApiResponse> {
     console.log(`Calling ${deptKey} department with query:`, customerQuery);
 
     const response = await fetch('https://api.langbase.com/beta/chat', {
@@ -95,26 +79,108 @@ async function callDepartment(deptKey: keyof Pick<Env, 'LANGBASE_SPORTS_PIPE_API
     });
 
     if (!response.ok) {
-        return new ReadableStream({
-            start(controller) {
-                controller.enqueue(new TextEncoder().encode(`Error: ${response.status} ${response.statusText}`));
-                controller.close();
-            }
-        });
+        throw new Error(`Error: ${response.status} ${response.statusText}`);
     }
 
+    return await response.json() as ApiResponse;
+}
+
+async function processMainChatbotResponse(response: Response, env: Env, threadId: string): Promise<ReadableStream> {
     const reader = response.body!.getReader();
     const decoder = new TextDecoder();
     const encoder = new TextEncoder();
 
+    let accumulatedToolCall: any = null;
+    let accumulatedArguments = '';
+
     return new ReadableStream({
         async start(controller) {
+            let buffer = '';
             while (true) {
                 const { done, value } = await reader.read();
                 if (done) break;
 
-                const chunk = decoder.decode(value, { stream: true });
-                controller.enqueue(encoder.encode(chunk));
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n');
+                buffer = lines.pop() || '';
+
+                for (const line of lines) {
+                    if (line.trim() === 'data: [DONE]') {
+                        controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+                        continue;
+                    }
+                    if (line.startsWith('data: ')) {
+                        try {
+                            const data = JSON.parse(line.slice(6));
+                            if (data.choices && data.choices[0].delta) {
+                                const delta = data.choices[0].delta;
+                                if (delta.content) {
+                                    const chunk = {
+                                        id: data.id,
+                                        object: 'chat.completion.chunk',
+                                        created: data.created,
+                                        model: data.model,
+                                        choices: [
+                                            {
+                                                index: 0,
+                                                delta: { content: delta.content },
+                                                finish_reason: null
+                                            }
+                                        ]
+                                    };
+                                    controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
+                                } else if (delta.tool_calls) {
+                                    if (!accumulatedToolCall) {
+                                        accumulatedToolCall = delta.tool_calls[0];
+                                        accumulatedArguments = delta.tool_calls[0].function.arguments || '';
+                                    } else {
+                                        accumulatedArguments += delta.tool_calls[0].function.arguments || '';
+                                    }
+
+                                    if (accumulatedToolCall.function.name && accumulatedArguments.endsWith('}')) {
+                                        try {
+                                            const args = JSON.parse(accumulatedArguments);
+                                            const departmentKey = getDepartmentKey(accumulatedToolCall.function.name);
+                                            if (departmentKey) {
+                                                const departmentResponse = await callDepartment(departmentKey, args.customerQuery, env, threadId);
+                                                let responseContent = departmentResponse.completion;
+                                                
+                                                try {
+                                                    const parsedResponse = JSON.parse(responseContent);
+                                                    const [key, value] = Object.entries(parsedResponse)[0];
+                                                    responseContent = `${key} ${value}`;
+                                                } catch (parseError) {
+                                                    console.warn('Error parsing department response:', parseError);
+                                                }
+
+                                                const chunk = {
+                                                    id: data.id,
+                                                    object: 'chat.completion.chunk',
+                                                    created: data.created,
+                                                    model: data.model,
+                                                    choices: [
+                                                        {
+                                                            index: 0,
+                                                            delta: { content: responseContent },
+                                                            finish_reason: null
+                                                        }
+                                                    ]
+                                                };
+                                                controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
+                                            }
+                                        } catch (parseError) {
+                                            console.warn('Error parsing accumulated arguments:', parseError);
+                                        }
+                                        accumulatedToolCall = null;
+                                        accumulatedArguments = '';
+                                    }
+                                }
+                            }
+                        } catch (error) {
+                            console.warn('Error processing chunk:', error, 'Line:', line);
+                        }
+                    }
+                }
             }
             controller.close();
         }
@@ -122,66 +188,14 @@ async function callDepartment(deptKey: keyof Pick<Env, 'LANGBASE_SPORTS_PIPE_API
 }
 
 
-async function processDepartmentCalls(toolCalls: ToolCall[], env: Env, threadId: string): Promise<ReadableStream> {
-    for (const toolCall of toolCalls) {
-        const functionName = toolCall.function.name;
-        const functionArgs = JSON.parse(toolCall.function.arguments);
-        const departmentKey = getDepartmentKey(functionName);
-        if (departmentKey) {
-            return await callDepartment(departmentKey, functionArgs.customerQuery, env, threadId);
-        }
-    }
-    return createErrorStream('No valid department call found');
-}
 
 
-async function processRawChoices(choice: Choice, env: Env, threadId: string): Promise<ReadableStream> {
-    const assistantMessage = choice.message;
-    if (assistantMessage.tool_calls && assistantMessage.tool_calls.length > 0) {
-        return await processDepartmentCalls(assistantMessage.tool_calls, env, threadId);
-    } else {
-        const content = assistantMessage.content || 'Sorry, I couldn\'t process your request.';
-        return createMessageStream(content);
-    }
-}
-
-function processSuccessfulCompletion(completion: any): ReadableStream {
-    try {
-        let message: string;
-        if (completion === null || completion === undefined) {
-            message = "Sorry, I couldn't process your request at this time.";
-        } else if (typeof completion === 'string') {
-            const parsedCompletion = JSON.parse(completion);
-            message = parsedCompletion.response || parsedCompletion.message || parsedCompletion.content || parsedCompletion.greeting || JSON.stringify(parsedCompletion);
-        } else {
-            message = completion.response || completion.message || completion.content || JSON.stringify(completion);
-        }
-        return createMessageStream(message);
-    } catch (error) {
-        console.error('Error processing completion:', error);
-        console.log('Raw completion:', completion);
-        return createErrorStream('Error processing response');
-    }
-}
-
-
-async function processMainChatbotResponse(data: ApiResponse, env: Env, threadId: string): Promise<ReadableStream> {
-    if (data.success && data.completion) {
-        return processSuccessfulCompletion(data.completion);
-    } else if (data.raw && data.raw.choices && data.raw.choices.length > 0) {
-        return processRawChoices(data.raw.choices[0], env, threadId);
-    } else {
-        return createErrorStream('Unexpected response format');
-    }
-}
-
-
-async function callMainChatbot(query: string, threadId: string | undefined, env: Env): Promise<{ data: ApiResponse, threadId: string | undefined }> {
+async function callMainChatbot(query: string, threadId: string | undefined, env: Env): Promise<Response> {
     const userQuery = {
         threadId,
         messages: [{ role: 'user', content: query }],
     };
-    const response = await fetch('https://api.langbase.com/beta/chat', {
+    return fetch('https://api.langbase.com/beta/chat', {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
@@ -189,14 +203,7 @@ async function callMainChatbot(query: string, threadId: string | undefined, env:
         },
         body: JSON.stringify(userQuery),
     });
-
-    const data = await response.json() as ApiResponse;
-    return {
-        data,
-        threadId: response.headers.get('lb-thread-id') || threadId
-    };
 }
-
 
 export default {
     async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -242,13 +249,19 @@ export default {
                 },
             });
         }
+        console.log('Received request:', { incomingMessages, threadId });
 
         const query = incomingMessages[incomingMessages.length - 1].content;
-        const { data, threadId: newThreadId } = await callMainChatbot(query, threadId, env);
-        threadId = newThreadId;
-        console.log(`main chatbot: ${data.completion}`);
 
-        const responseStream = await processMainChatbotResponse(data, env, threadId || '');
+        console.log('Calling main chatbot with query:', query);
+
+        const response = await callMainChatbot(query, threadId, env);
+        threadId = response.headers.get('lb-thread-id') || threadId;
+
+        const responseStream = await processMainChatbotResponse(response, env, threadId || '');
+
+        console.log('responseStream:', responseStream);
+        console.log('Sending response with threadId:', threadId);
 
         return new Response(responseStream, {
             headers: {
@@ -263,5 +276,3 @@ export default {
         });
     },
 };
-
-
