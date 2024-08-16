@@ -1,58 +1,6 @@
-interface LangbaseResponse {
-	completion: string;
-}
+import { Env, LangbaseResponse, ToolCall, AssistantMessage, Choice, Usage, RawResponse, ApiResponse } from './types';
 
-interface ToolCall {
-	id: string;
-	type: string;
-	function: {
-		name: string;
-		arguments: string;
-	};
-}
-
-interface AssistantMessage {
-	role: string;
-	content: string | null;
-	tool_calls?: ToolCall[];
-}
-
-interface Choice {
-	index: number;
-	message: AssistantMessage;
-	logprobs: null;
-	finish_reason: string;
-}
-
-interface Usage {
-	prompt_tokens: number;
-	completion_tokens: number;
-	total_tokens: number;
-}
-
-interface RawResponse {
-	id: string;
-	object: string;
-	created: number;
-	model: string;
-	choices: Choice[];
-	usage: Usage;
-	system_fingerprint: null;
-}
-
-interface ApiResponse {
-	success: boolean;
-	completion: string;
-	raw: RawResponse;
-}
-
-export interface Env {
-    OPENAI_API_KEY: string;
-    LANGBASE_TRAVEL_PIPE_API_KEY: string,
-    LANGBASE_ELECTRONICS_PIPE_API_KEY: string,
-    LANGBASE_SPORTS_PIPE_API_KEY: string,
-    LANGBASE_ONLINE_STORE_CUSTOMER_SERVICE_API_KEY: string
-}
+const encoder = new TextEncoder();
 
 function getDepartmentKey(functionName: string): keyof Pick<Env, 'LANGBASE_SPORTS_PIPE_API_KEY' | 'LANGBASE_ELECTRONICS_PIPE_API_KEY' | 'LANGBASE_TRAVEL_PIPE_API_KEY'> | null {
     const departmentMap: { [key: string]: keyof Pick<Env, 'LANGBASE_SPORTS_PIPE_API_KEY' | 'LANGBASE_ELECTRONICS_PIPE_API_KEY' | 'LANGBASE_TRAVEL_PIPE_API_KEY'> } = {
@@ -85,8 +33,6 @@ async function callDepartment(deptKey: keyof Pick<Env, 'LANGBASE_SPORTS_PIPE_API
     return await response.json() as ApiResponse;
 }
 
-const encoder = new TextEncoder();
-
 async function processMainChatbotResponse(response: Response, env: Env, threadId: string): Promise<ReadableStream> {
     const reader = response.body!.getReader();
     const decoder = new TextDecoder();
@@ -106,9 +52,9 @@ async function processMainChatbotResponse(response: Response, env: Env, threadId
                 buffer = lines.pop() || '';
 
                 for (const line of lines) {
-                    [accumulatedToolCall, accumulatedArguments] = await processLine(
-                        line, controller, env, threadId, accumulatedToolCall, accumulatedArguments
-                    );
+                    const result = await processLine(line, controller, env, threadId, accumulatedToolCall, accumulatedArguments);
+                    accumulatedToolCall = result[0];
+                    accumulatedArguments = result[1];
                 }
             }
             controller.close();
@@ -164,7 +110,6 @@ async function processLine(
     return [accumulatedToolCall, accumulatedArguments];
 }
 
-
 function enqueueContentChunk(controller: ReadableStreamDefaultController, data: any, content: string) {
     const chunk = {
         id: data.id,
@@ -176,7 +121,6 @@ function enqueueContentChunk(controller: ReadableStreamDefaultController, data: 
     controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
 }
 
-
 function formatDepartmentResponse(response: string): string {
     try {
         const parsedResponse = JSON.parse(response);
@@ -187,8 +131,6 @@ function formatDepartmentResponse(response: string): string {
         return response;
     }
 }
-
-
 
 async function callMainChatbot(query: string, threadId: string | undefined, env: Env): Promise<Response> {
     const userQuery = {
