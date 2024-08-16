@@ -85,10 +85,11 @@ async function callDepartment(deptKey: keyof Pick<Env, 'LANGBASE_SPORTS_PIPE_API
     return await response.json() as ApiResponse;
 }
 
+const encoder = new TextEncoder();
+
 async function processMainChatbotResponse(response: Response, env: Env, threadId: string): Promise<ReadableStream> {
     const reader = response.body!.getReader();
     const decoder = new TextDecoder();
-    const encoder = new TextEncoder();
 
     let accumulatedToolCall: any = null;
     let accumulatedArguments = '';
@@ -105,81 +106,9 @@ async function processMainChatbotResponse(response: Response, env: Env, threadId
                 buffer = lines.pop() || '';
 
                 for (const line of lines) {
-                    if (line.trim() === 'data: [DONE]') {
-                        controller.enqueue(encoder.encode('data: [DONE]\n\n'));
-                        continue;
-                    }
-                    if (line.startsWith('data: ')) {
-                        try {
-                            const data = JSON.parse(line.slice(6));
-                            if (data.choices && data.choices[0].delta) {
-                                const delta = data.choices[0].delta;
-                                if (delta.content) {
-                                    const chunk = {
-                                        id: data.id,
-                                        object: 'chat.completion.chunk',
-                                        created: data.created,
-                                        model: data.model,
-                                        choices: [
-                                            {
-                                                index: 0,
-                                                delta: { content: delta.content },
-                                                finish_reason: null
-                                            }
-                                        ]
-                                    };
-                                    controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
-                                } else if (delta.tool_calls) {
-                                    if (!accumulatedToolCall) {
-                                        accumulatedToolCall = delta.tool_calls[0];
-                                        accumulatedArguments = delta.tool_calls[0].function.arguments || '';
-                                    } else {
-                                        accumulatedArguments += delta.tool_calls[0].function.arguments || '';
-                                    }
-
-                                    if (accumulatedToolCall.function.name && accumulatedArguments.endsWith('}')) {
-                                        try {
-                                            const args = JSON.parse(accumulatedArguments);
-                                            const departmentKey = getDepartmentKey(accumulatedToolCall.function.name);
-                                            if (departmentKey) {
-                                                const departmentResponse = await callDepartment(departmentKey, args.customerQuery, env, threadId);
-                                                let responseContent = departmentResponse.completion;
-                                                
-                                                try {
-                                                    const parsedResponse = JSON.parse(responseContent);
-                                                    const [key, value] = Object.entries(parsedResponse)[0];
-                                                    responseContent = `${key} ${value}`;
-                                                } catch (parseError) {
-                                                    console.warn('Error parsing department response:', parseError);
-                                                }
-
-                                                const chunk = {
-                                                    id: data.id,
-                                                    object: 'chat.completion.chunk',
-                                                    created: data.created,
-                                                    model: data.model,
-                                                    choices: [
-                                                        {
-                                                            index: 0,
-                                                            delta: { content: responseContent },
-                                                            finish_reason: null
-                                                        }
-                                                    ]
-                                                };
-                                                controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
-                                            }
-                                        } catch (parseError) {
-                                            console.warn('Error parsing accumulated arguments:', parseError);
-                                        }
-                                        accumulatedToolCall = null;
-                                        accumulatedArguments = '';
-                                    }
-                                }
-                            }
-                        } catch (error) {
-                            console.warn('Error processing chunk:', error, 'Line:', line);
-                        }
-                    }
+                    [accumulatedToolCall, accumulatedArguments] = await processLine(
+                        line, controller, env, threadId, accumulatedToolCall, accumulatedArguments
+                    );
                 }
             }
             controller.close();
@@ -187,6 +116,77 @@ async function processMainChatbotResponse(response: Response, env: Env, threadId
     });
 }
 
+async function processLine(
+    line: string, 
+    controller: ReadableStreamDefaultController, 
+    env: Env, 
+    threadId: string, 
+    accumulatedToolCall: any, 
+    accumulatedArguments: string
+): Promise<[any, string]> {
+    if (line.trim() === 'data: [DONE]') {
+        controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+        return [accumulatedToolCall, accumulatedArguments];
+    }
+    if (!line.startsWith('data: ')) return [accumulatedToolCall, accumulatedArguments];
+
+    try {
+        const data = JSON.parse(line.slice(6));
+        if (!data.choices || !data.choices[0].delta) return [accumulatedToolCall, accumulatedArguments];
+
+        const delta = data.choices[0].delta;
+        if (delta.content) {
+            enqueueContentChunk(controller, data, delta.content);
+        } else if (delta.tool_calls) {
+            if (!accumulatedToolCall) {
+                accumulatedToolCall = delta.tool_calls[0];
+                accumulatedArguments = delta.tool_calls[0].function.arguments || '';
+            } else {
+                accumulatedArguments += delta.tool_calls[0].function.arguments || '';
+            }
+
+            if (accumulatedToolCall.function.name && accumulatedArguments.endsWith('}')) {
+                const departmentKey = getDepartmentKey(accumulatedToolCall.function.name);
+                if (departmentKey) {
+                    const args = JSON.parse(accumulatedArguments);
+                    const departmentResponse = await callDepartment(departmentKey, args.customerQuery, env, threadId);
+                    let responseContent = formatDepartmentResponse(departmentResponse.completion);
+                    enqueueContentChunk(controller, data, responseContent);
+                }
+                accumulatedToolCall = null;
+                accumulatedArguments = '';
+            }
+        }
+    } catch (error) {
+        console.warn('Error processing chunk:', error, 'Line:', line);
+    }
+
+    return [accumulatedToolCall, accumulatedArguments];
+}
+
+
+function enqueueContentChunk(controller: ReadableStreamDefaultController, data: any, content: string) {
+    const chunk = {
+        id: data.id,
+        object: 'chat.completion.chunk',
+        created: data.created,
+        model: data.model,
+        choices: [{ index: 0, delta: { content }, finish_reason: null }]
+    };
+    controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
+}
+
+
+function formatDepartmentResponse(response: string): string {
+    try {
+        const parsedResponse = JSON.parse(response);
+        const [key, value] = Object.entries(parsedResponse)[0];
+        return `${key} ${value}`;
+    } catch (parseError) {
+        console.warn('Error parsing department response:', parseError);
+        return response;
+    }
+}
 
 
 
