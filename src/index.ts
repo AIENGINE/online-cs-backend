@@ -148,7 +148,9 @@ async function processRawChoices(choice: Choice, env: Env, threadId: string): Pr
 function processSuccessfulCompletion(completion: any): ReadableStream {
     try {
         let message: string;
-        if (typeof completion === 'string') {
+        if (completion === null || completion === undefined) {
+            message = "Sorry, I couldn't process your request at this time.";
+        } else if (typeof completion === 'string') {
             const parsedCompletion = JSON.parse(completion);
             message = parsedCompletion.response || parsedCompletion.message || parsedCompletion.content || parsedCompletion.greeting || JSON.stringify(parsedCompletion);
         } else {
@@ -156,7 +158,7 @@ function processSuccessfulCompletion(completion: any): ReadableStream {
         }
         return createMessageStream(message);
     } catch (error) {
-        console.error('Error parsing completion:', error);
+        console.error('Error processing completion:', error);
         console.log('Raw completion:', completion);
         return createErrorStream('Error processing response');
     }
@@ -164,7 +166,7 @@ function processSuccessfulCompletion(completion: any): ReadableStream {
 
 
 async function processMainChatbotResponse(data: ApiResponse, env: Env, threadId: string): Promise<ReadableStream> {
-    if (data.success || data.completion) {
+    if (data.success && data.completion) {
         return processSuccessfulCompletion(data.completion);
     } else if (data.raw && data.raw.choices && data.raw.choices.length > 0) {
         return processRawChoices(data.raw.choices[0], env, threadId);
