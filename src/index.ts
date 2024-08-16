@@ -164,7 +164,7 @@ function processSuccessfulCompletion(completion: any): ReadableStream {
 
 
 async function processMainChatbotResponse(data: ApiResponse, env: Env, threadId: string): Promise<ReadableStream> {
-    if (data.success && data.completion) {
+    if (data.success || data.completion) {
         return processSuccessfulCompletion(data.completion);
     } else if (data.raw && data.raw.choices && data.raw.choices.length > 0) {
         return processRawChoices(data.raw.choices[0], env, threadId);
@@ -198,10 +198,13 @@ async function callMainChatbot(query: string, threadId: string | undefined, env:
 
 export default {
     async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+        const isProduction = request.url.includes('workers.dev');
+        const allowedOrigin = isProduction ? 'https://online-cs.pages.dev' : 'http://localhost:3000';
+
         if (request.method === 'OPTIONS') {
             return new Response(null, {
                 headers: {
-                    'Access-Control-Allow-Origin': 'http://localhost:3000',
+                    'Access-Control-Allow-Origin': allowedOrigin,
                     'Access-Control-Allow-Methods': 'POST, OPTIONS',
                     'Access-Control-Allow-Headers': 'Content-Type',
                 },
@@ -209,7 +212,12 @@ export default {
         }
 
         if (request.method !== 'POST') {
-            return new Response('Method Not Allowed', { status: 405 });
+            return new Response('Method Not Allowed', { 
+                status: 405,
+                headers: {
+                    'Access-Control-Allow-Origin': allowedOrigin,
+                }
+            });
         }
 
         let incomingMessages;
@@ -228,7 +236,7 @@ export default {
                 status: 400,
                 headers: {
                     'Content-Type': 'application/json',
-                    'Access-Control-Allow-Origin': 'http://localhost:3000',
+                    'Access-Control-Allow-Origin': allowedOrigin,
                 },
             });
         }
@@ -236,6 +244,7 @@ export default {
         const query = incomingMessages[incomingMessages.length - 1].content;
         const { data, threadId: newThreadId } = await callMainChatbot(query, threadId, env);
         threadId = newThreadId;
+        console.log(`main chatbot: ${data.completion}`);
 
         const responseStream = await processMainChatbotResponse(data, env, threadId || '');
 
@@ -244,7 +253,7 @@ export default {
                 'Content-Type': 'text/event-stream',
                 'Cache-Control': 'no-cache',
                 'Connection': 'keep-alive',
-                'Access-Control-Allow-Origin': 'http://localhost:3000',
+                'Access-Control-Allow-Origin': allowedOrigin,
                 'Access-Control-Allow-Methods': 'POST, OPTIONS',
                 'Access-Control-Allow-Headers': 'Content-Type, lb-thread-id',
                 'lb-thread-id': threadId || '',
